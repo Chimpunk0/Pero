@@ -1,6 +1,6 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "pero",
+  "productName": "Pero",
   "version": "0.1.0",
   "identifier": "com.simonpollak.pero",
   "build": {
@@ -12,13 +12,17 @@
   "app": {
     "windows": [
       {
-        "title": "pero",
-        "width": 800,
-        "height": 600
+        "title": "Pero",
+        "width": 1180,
+        "height": 760,
+        "minWidth": 720,
+        "minHeight": 520,
+        "center": true
       }
     ],
     "security": {
-      "csp": null
+      "csp": "default-src 'self'; connect-src ipc: http://ipc.localhost; img-src 'self' asset: http://asset.localhost https: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'",
+      "devCsp": "default-src 'self'; connect-src 'self' ipc: http://ipc.localhost ws://localhost:1420 http://localhost:1420; img-src 'self' asset: http://asset.localhost https: data:; style-src 'self' 'unsafe-inline'; font-src 'self' data:; script-src 'self'; object-src 'none'; frame-src 'none'; base-uri 'self'; form-action 'none'"
     }
   },
   "bundle": {

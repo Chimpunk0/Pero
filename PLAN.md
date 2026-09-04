@@ -24,8 +24,9 @@ The first version should be intentionally small and finishable.
 - Edit Markdown text.
 - Save files.
 - Create new Markdown files.
-- Support three viewing modes:
+- Support four viewing modes:
   - **Source mode**: plain Markdown editing.
+  - **Live mode**: Obsidian-style editing with visual formatting and editable Markdown syntax.
   - **Preview mode**: rendered Markdown reading view.
   - **Split mode**: editor and preview side by side.
 - Use a strong editor component, most likely **CodeMirror**.
@@ -155,6 +156,37 @@ Local data:
 - Improve error messages.
 - Test with real notes.
 - Package the app for macOS.
+
+## Version 1 Implementation Status
+
+Implemented on the `codex/release-markdown-editor` branch:
+
+- [x] CodeMirror Markdown editor with undo, search, line wrapping, and spellcheck.
+- [x] Source, Live, Split, and Preview modes.
+- [x] Live formatting for headings, emphasis, inline code, links, and clickable tasks.
+- [x] Sanitized GitHub-flavoured Markdown preview.
+- [x] New, Open, Save, and Save As workflows.
+- [x] Atomic Rust writes and content-hash conflict detection for edits made by another app.
+- [x] Dirty-state protection before replacing or closing a note.
+- [x] System, light, and dark themes with persisted preferences.
+- [x] Recent-files menu.
+- [x] Keyboard shortcuts, focus states, responsive split mode, and accessible status messages.
+- [x] Restrictive content security policy and narrow Tauri permissions.
+- [x] Automated frontend security/state tests and Rust file/preference tests.
+- [x] Pero application icon and release metadata.
+
+Remaining distribution work requires macOS infrastructure rather than product code: validate the `.app`/DMG on macOS, configure an Apple signing identity, and notarize the final release artifact.
+
+## Version 1 Definition of Done
+
+- Notes are UTF-8 Markdown files no larger than 16 MB.
+- Raw HTML may be rendered only after sanitization; scripts, event handlers, forms, embeds, and unsafe URLs are removed.
+- New, Open, and Close never discard dirty text without an explicit Discard choice.
+- A cancelled or failed Save leaves the current editor text intact and dirty.
+- A file changed by another application is never silently overwritten; Save As remains available.
+- Switching documents resets editor undo history, so Undo cannot restore a previous file.
+- `npm run check`, Rust formatting, Clippy with warnings denied, and Rust tests must pass before release.
+- macOS builds must be smoke-tested, signed, and notarized before public distribution.
 
 ## Learning Goals
 

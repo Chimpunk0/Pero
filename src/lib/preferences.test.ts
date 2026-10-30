@@ -7,6 +7,21 @@ import {
 } from "./preferences";
 
 describe("preferences", () => {
+  it("clamps writing sizes and migrates old preferences", () => {
+    expect(
+      normalizePreferences({
+        theme: "dark",
+        viewMode: "source",
+        recentFiles: [],
+      }),
+    ).toEqual({ ...DEFAULT_PREFERENCES, theme: "dark", viewMode: "source" });
+    expect(
+      normalizePreferences({ fontSize: 100, writingWidth: -1 }),
+    ).toMatchObject({ fontSize: 24, writingWidth: 600 });
+    expect(
+      normalizePreferences({ fontSize: NaN, writingWidth: Infinity }),
+    ).toMatchObject({ fontSize: 16, writingWidth: 820 });
+  });
   it("uses safe defaults for malformed data", () => {
     expect(normalizePreferences("broken")).toEqual(DEFAULT_PREFERENCES);
     expect(normalizePreferences({ theme: "neon", viewMode: "pages" })).toEqual(

@@ -11,6 +11,8 @@ export interface Preferences {
   theme: ThemePreference;
   viewMode: ViewMode;
   recentFiles: RecentFile[];
+  fontSize: number;
+  writingWidth: number;
 }
 
 export interface MarkdownDocument {
@@ -18,4 +20,13 @@ export interface MarkdownDocument {
   name: string;
   contents: string;
   revision: string;
+}
+
+export interface RecoveryDraft {
+  path: string | null;
+  name: string;
+  content: string;
+  savedContent: string;
+  revision: string | null;
+  lineSeparator: "\n" | "\r\n" | "\r";
 }

@@ -228,3 +228,73 @@ Remaining distribution work requires macOS infrastructure rather than product co
 - Vizia may be explored separately for learning and comparison.
 - The app should prioritize simplicity and beauty over feature count.
 - The first version should be useful even if it only edits local Markdown files.
+
+## UI refinement — September 2026
+
+- Rounded paper workspace and one document title inspired by the supplied mockup; multiple document tabs remain future work.
+- File actions and recent notes live in native OS menus. Menu actions reuse the existing unsaved-change safeguards.
+- A raised view dropdown contains Source, Live, Split, and Preview. Settings contains an Appearance tab with light, dark, and system choices.
+- macOS uses an overlay title bar with real traffic-light controls. Windows and Linux retain native decorations to preserve genuine OS controls; removing their title bars requires further platform-specific work.
+
+## Gradual improvement roadmap
+
+Complete and verify each stage before expanding the next one.
+
+### Stage 1: Native menus
+
+- [x] Allow file and Close/Quit actions while Settings is open, dismissing Settings first.
+- [x] Checkmark the active view and disable file actions during operations or unsaved-change prompts.
+- [x] Expose Find and Replace through Edit, opening an editing mode from Preview.
+- [x] Use short recent filenames; include parent paths only for duplicate names.
+
+### Stage 2: Recovery and file safety
+
+- [x] Persist an independent recovery draft and offer restoration after a crash.
+- [x] Detect external changes and offer Reload or Keep My Changes without silent overwrites.
+
+### Stage 3: Writing comfort
+
+- [x] Persist font size and writing width for Source, Live, Split, and Preview.
+- [ ] Add line-spacing and line-number preferences.
+- [ ] Unify remaining editor colors and remove obsolete toolbar styles.
+- [ ] Adjustable split divider and optional synchronized scrolling.
+
+### Stage 4: Document continuity
+
+- [ ] Resolve local Markdown images relative to the document with narrowly scoped file access.
+- [ ] Optionally reopen the last note and restore cursor/scroll positions.
+
+## Live Preview refinement — October 2026
+
+- Use Obsidian's cursor-focused editing model: inline syntax appears when the cursor or selection enters that formatted span. Unrelated formatting on the same line stays rendered.
+- Use proportional text and a readable writing width in Live; retain monospace text, line numbers, and the active-line indicator in Source and Split.
+- Render headings, emphasis, strikethrough, inline code, bullets, tasks, blockquotes, fenced code, rules, and standalone tables. Clicking a table cell reveals its Markdown at that cell; Enter also reveals a focused rendered block.
+- Render standalone HTTPS images through the existing sanitizer. Local images still require the future document-relative file-access work.
+- Open external Markdown links with Cmd/Ctrl-click in Live using the same URL restrictions as Reading view.
+- Keep New, Open, Save, Save As, and Open Recent in the native File menu. Remove the obsolete file-row styles; keep the existing unsaved-change safeguards and shortcuts.
+- This stage originally targeted core Markdown. The later visual-consistency refinement adds basic callouts and math; local embeds and interactive table cell editing remain outside this version.
+
+## File safety and writing comfort — October 2026
+
+- Cancel document replacement if new edits arrive during the file read. Serialize document transitions across dialogs and reads.
+- Keep revision protection for Save As to the current note, including symbolic-link aliases; preserve all supported Markdown extensions in the dialog.
+- Write an independent recovery draft to the app configuration directory after 350 ms of inactivity and when leaving the window. Offer Restore or Discard at startup before file actions are enabled. Saved/discarded drafts are removed; original notes are never changed by recovery.
+- Check the open note for external changes when returning to the window and every ten seconds while visible. Reload follows the existing unsaved-change confirmation; Keep My Changes directs the next save through Save As. Existing revision checks remain active.
+- Add persisted text size (12–24 px) and writing width (600–1100 px) in Appearance. Older preferences receive defaults without losing theme or recent files.
+
+## Visual consistency and Obsidian note readability — October 2026
+
+- Share proportional typography, writing width, surface colors, headings, tables, quotes and task styling between Live and Preview.
+- Use restrained toolbar shadows and explicit selected appearance controls.
+- Show the current note's parent folders below its filename; retain the full path in the tooltip.
+- Render wikilink labels/aliases, highlights, basic callouts and KaTeX formulas in Live and Preview. Editing reveals the original Markdown; saved text remains unchanged.
+- Keep callouts expanded, including those with fold markers. Full Obsidian extension compatibility remains outside this version.
+- Present local note references with a dotted underline and an explanatory tooltip. Local attachments and note embeds use labeled placeholders until document-relative access is implemented.
+- Keep local-note navigation, attachment loading and vault indexing out of this visual refinement.
+
+## Markdown tables — October 2026
+
+- Render GFM pipe tables consistently in Live and Preview, including up to three leading spaces, inline formatting, escaped pipes and column alignment.
+- Keep wide tables inside keyboard-focusable horizontal scroll regions instead of widening the note.
+- Live tables reveal their original Markdown when a cell is clicked or Enter/Space is used on the focused table; moving the cursor outside renders the table again.
+- Preserve sanitized rendering, raw saved Markdown and literal table examples inside fenced code blocks.

@@ -9,6 +9,8 @@ export const DEFAULT_PREFERENCES: Preferences = {
   theme: "system",
   viewMode: "live",
   recentFiles: [],
+  fontSize: 16,
+  writingWidth: 820,
 };
 
 const themes: ThemePreference[] = ["system", "light", "dark"];
@@ -26,6 +28,18 @@ export function normalizePreferences(value: unknown): Preferences {
       ? (candidate.viewMode as ViewMode)
       : DEFAULT_PREFERENCES.viewMode,
     recentFiles: normalizeRecentFiles(candidate.recentFiles),
+    fontSize: validNumber(
+      candidate.fontSize,
+      12,
+      24,
+      DEFAULT_PREFERENCES.fontSize,
+    ),
+    writingWidth: validNumber(
+      candidate.writingWidth,
+      600,
+      1100,
+      DEFAULT_PREFERENCES.writingWidth,
+    ),
   };
 }
 
@@ -80,4 +94,15 @@ export function removeRecentFile(
   path: string,
 ): RecentFile[] {
   return recentFiles.filter((recent) => recent.path !== path);
+}
+
+function validNumber(
+  value: unknown,
+  min: number,
+  max: number,
+  fallback: number,
+): number {
+  return typeof value === "number" && Number.isFinite(value)
+    ? Math.round(Math.min(max, Math.max(min, value)))
+    : fallback;
 }

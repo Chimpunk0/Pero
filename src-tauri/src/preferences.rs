@@ -5,17 +5,19 @@ use std::{collections::HashSet, fs, path::Path};
 #[derive(Clone, Debug, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RecentFile {
-    path: String,
-    name: String,
+    pub path: String,
+    pub name: String,
     opened_at: f64,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
-#[serde(rename_all = "camelCase")]
+#[serde(rename_all = "camelCase", default)]
 pub struct Preferences {
     theme: String,
     view_mode: String,
-    recent_files: Vec<RecentFile>,
+    pub recent_files: Vec<RecentFile>,
+    font_size: u16,
+    writing_width: u16,
 }
 
 impl Default for Preferences {
@@ -24,11 +26,15 @@ impl Default for Preferences {
             theme: "system".into(),
             view_mode: "live".into(),
             recent_files: Vec::new(),
+            font_size: 16,
+            writing_width: 820,
         }
     }
 }
 
 fn normalized(mut preferences: Preferences) -> Preferences {
+    preferences.font_size = preferences.font_size.clamp(12, 24);
+    preferences.writing_width = preferences.writing_width.clamp(600, 1100);
     if !["system", "light", "dark"].contains(&preferences.theme.as_str()) {
         preferences.theme = "system".into();
     }
@@ -86,10 +92,28 @@ mod tests {
     }
 
     #[test]
+    fn old_preferences_keep_theme_and_receive_writing_defaults() {
+        let directory = tempdir().unwrap();
+        let path = directory.path().join("preferences.json");
+        fs::write(
+            &path,
+            r#"{"theme":"dark","viewMode":"source","recentFiles":[]}"#,
+        )
+        .unwrap();
+        let loaded = load(&path);
+        assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.view_mode, "source");
+        assert_eq!(loaded.font_size, 16);
+        assert_eq!(loaded.writing_width, 820);
+    }
+
+    #[test]
     fn preferences_round_trip() {
         let directory = tempdir().unwrap();
         let path = directory.path().join("nested").join("preferences.json");
         let preferences = Preferences {
+            font_size: 18,
+            writing_width: 900,
             theme: "dark".into(),
             view_mode: "split".into(),
             recent_files: vec![RecentFile {
@@ -101,12 +125,16 @@ mod tests {
         save(&path, preferences).unwrap();
         let loaded = load(&path);
         assert_eq!(loaded.theme, "dark");
+        assert_eq!(loaded.font_size, 18);
+        assert_eq!(loaded.writing_width, 900);
         assert_eq!(loaded.recent_files.len(), 1);
     }
 
     #[test]
     fn duplicate_recent_paths_are_removed_even_when_separated() {
         let preferences = Preferences {
+            font_size: 16,
+            writing_width: 820,
             theme: "system".into(),
             view_mode: "live".into(),
             recent_files: vec![

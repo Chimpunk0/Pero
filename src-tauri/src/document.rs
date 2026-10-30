@@ -147,6 +147,37 @@ pub fn atomic_write(
     Ok(())
 }
 
+// Save As must retain conflict protection when an alias points to the open file.
+// Resolve existing destinations before writing so a symlink itself is not replaced.
+pub fn write_from_document(
+    path: &str,
+    contents: &str,
+    expected_revision: Option<&str>,
+    current_document_path: Option<&str>,
+) -> Result<MarkdownDocument, String> {
+    validate_markdown_path(Path::new(path))?;
+    let destination = if Path::new(path).exists() {
+        fs::canonicalize(path).map_err(|error| error.to_string())?
+    } else {
+        PathBuf::from(path)
+    };
+    let same_document = current_document_path.is_none_or(|original| {
+        Path::new(path) == Path::new(original)
+            || fs::canonicalize(original).is_ok_and(|original| original == destination)
+    });
+    write(
+        destination
+            .to_str()
+            .ok_or("The file path is not valid UTF-8.")?,
+        contents,
+        if same_document {
+            expected_revision
+        } else {
+            None
+        },
+    )
+}
+
 pub fn write(
     path: &str,
     contents: &str,
@@ -182,6 +213,49 @@ mod tests {
         let saved = write(path.to_str().unwrap(), "second", Some(&opened.revision)).unwrap();
         assert_eq!(saved.contents, "second");
         assert_eq!(fs::read_to_string(path).unwrap(), "second");
+    }
+
+    #[test]
+    fn save_as_to_another_file_does_not_compare_unrelated_revisions() {
+        let directory = tempdir().unwrap();
+        let original = directory.path().join("original.md");
+        let copy = directory.path().join("copy.md");
+        fs::write(&original, "original").unwrap();
+        let opened = read(original.to_str().unwrap()).unwrap();
+        write_from_document(
+            copy.to_str().unwrap(),
+            "my edit",
+            Some(&opened.revision),
+            Some(&opened.path),
+        )
+        .unwrap();
+        assert_eq!(fs::read_to_string(copy).unwrap(), "my edit");
+        assert_eq!(fs::read_to_string(original).unwrap(), "original");
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn save_as_through_symlink_still_detects_external_changes() {
+        let directory = tempdir().unwrap();
+        let original = directory.path().join("original.md");
+        let alias = directory.path().join("alias.md");
+        fs::write(&original, "original").unwrap();
+        std::os::unix::fs::symlink(&original, &alias).unwrap();
+        let opened = read(original.to_str().unwrap()).unwrap();
+        fs::write(&original, "external edit").unwrap();
+        let error = write_from_document(
+            alias.to_str().unwrap(),
+            "my edit",
+            Some(&opened.revision),
+            Some(&opened.path),
+        )
+        .unwrap_err();
+        assert!(error.contains("changed on disk"));
+        assert_eq!(fs::read_to_string(original).unwrap(), "external edit");
+        assert!(fs::symlink_metadata(alias)
+            .unwrap()
+            .file_type()
+            .is_symlink());
     }
 
     #[test]

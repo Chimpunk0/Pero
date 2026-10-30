@@ -7,11 +7,18 @@ Pero is a focused desktop Markdown editor built with Tauri, Rust, React, and Cod
 - Create, open, edit, and safely save `.md`, `.markdown`, `.mdown`, and `.mkd` files.
 - Source, Obsidian-style Live, Split, and Preview modes.
 - GitHub-flavoured Markdown preview with sanitized user HTML.
-- Clickable task checkboxes in Live mode.
+- Live mode hides syntax outside the formatted text being edited, with proportional typography, rendered lists, quotes, code blocks, tables, and clickable tasks.
+- New, Open, Save, Save As, and Open Recent live in the native File menu.
+- Cmd/Ctrl-click external links in Live mode; click a rendered table to edit its Markdown.
+- Consistent Live/Preview typography, writing width, tables and task styling.
+- Wikilink labels and aliases, highlights, expanded callouts, and inline/display math via bundled KaTeX.
+- Local note links are labeled references; local images and note embeds show attachment placeholders. Vault navigation and local attachment loading are not yet supported.
+- The current note's parent folders appear below its filename; hover for the full path.
 - System, light, and dark themes.
-- Recent files and remembered preferences.
+- Recent files and remembered preferences, including text size and writing width.
+- Independent recovery drafts with Restore/Discard after an unexpected exit.
 - Unsaved-change protection for New, Open, and window close.
-- External-change detection, so a file edited by Obsidian is not silently overwritten.
+- External-change detection with Reload or Keep My Changes; Save As preserves conflict protection when selecting the open file.
 - `Cmd/Ctrl+N`, `Cmd/Ctrl+O`, `Cmd/Ctrl+S`, `Cmd/Ctrl+Shift+S`, and `Cmd/Ctrl+1…4` shortcuts.
 
 ## Run it locally
@@ -51,5 +58,24 @@ macOS distribution builds still need an Apple Developer signing identity and not
 - `src/lib/platform.ts` — narrow bridge between React and Tauri.
 - `src-tauri/src/document.rs` — validated reads, conflict detection, atomic writes.
 - `src-tauri/src/preferences.rs` — local preferences and recent files.
+- `src-tauri/src/recovery.rs` — independent, atomic recovery snapshots.
 
 The code intentionally stays small and direct so it can double as a Rust/Tauri learning project.
+
+## Recovery and external changes
+
+Unsaved text is copied to `recovery.json` in Tauri's application configuration directory after 350 ms without edits, and when the window loses focus. This is a local, unencrypted recovery copy, separate from your Markdown file. At the next launch, Restore brings the draft back into the editor; Discard deletes only the recovery copy. Recovery is cleared after saving or explicitly discarding changes when closing. A crash can still lose edits made since the last completed snapshot. If a draft is damaged, it is kept for manual recovery and new recovery writes are disabled for that session.
+
+Pero checks the open file on window focus and every ten seconds while visible. Reload asks before discarding unsaved edits. Keep My Changes retains your text and directs Save to Save As, where you can choose a separate file. Selecting the original file still checks its revision and rejects a conflicting overwrite.
+
+## Tables
+
+Live and Preview render Markdown pipe tables, including aligned columns and inline formatting:
+
+```markdown
+| Item        | Value |
+| :---------- | ----: |
+| **Example** |    42 |
+```
+
+In Live, click a cell (or focus the table and press Enter) to edit its Markdown. Move the cursor outside the table to render it again. Wide tables scroll horizontally; `\|` inserts a literal pipe inside a cell.

@@ -6,23 +6,16 @@ import {
   useMemo,
   useRef,
   useState,
+  type CSSProperties,
 } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import {
   MarkdownEditor,
   type MarkdownEditorHandle,
 } from "./components/MarkdownEditor";
-import {
-  CloseIcon,
-  MoonIcon,
-  NewIcon,
-  OpenIcon,
-  RecentIcon,
-  SaveAsIcon,
-  SaveIcon,
-  SunIcon,
-  SystemIcon,
-} from "./components/Icons";
+import { CloseIcon } from "./components/Icons";
+import { EditorControls } from "./components/EditorControls";
+import { listen } from "@tauri-apps/api/event";
 import {
   addRecentFile,
   DEFAULT_PREFERENCES,
@@ -33,11 +26,19 @@ import {
   chooseSavePath,
   isTauri,
   loadPreferences,
+  loadRecovery,
+  persistRecovery,
   persistPreferences,
+  syncNativeMenu,
   readMarkdownFile,
   writeMarkdownFile,
 } from "./lib/platform";
-import type { RecentFile, ThemePreference, ViewMode } from "./types";
+import type {
+  RecentFile,
+  ThemePreference,
+  ViewMode,
+  RecoveryDraft,
+} from "./types";
 import "./App.css";
 
 const MarkdownPreview = lazy(() =>
@@ -75,19 +76,6 @@ function detectLineSeparator(content: string): "\n" | "\r\n" | "\r" {
   return "\n";
 }
 
-const MODE_LABELS: Record<ViewMode, string> = {
-  source: "Source",
-  live: "Live",
-  split: "Split",
-  preview: "Preview",
-};
-
-const THEME_LABELS: Record<ThemePreference, string> = {
-  system: "System theme",
-  light: "Light theme",
-  dark: "Dark theme",
-};
-
 function getErrorMessage(error: unknown): string {
   if (typeof error === "string") return error;
   if (error instanceof Error) return error.message;
@@ -109,18 +97,26 @@ function App() {
   const [theme, setTheme] = useState<ThemePreference>(
     DEFAULT_PREFERENCES.theme,
   );
+  const [fontSize, setFontSize] = useState(DEFAULT_PREFERENCES.fontSize);
+  const [writingWidth, setWritingWidth] = useState(
+    DEFAULT_PREFERENCES.writingWidth,
+  );
+  const [recoveryLoaded, setRecoveryLoaded] = useState(false);
+  const [recoveryDraft, setRecoveryDraft] = useState<RecoveryDraft | null>(
+    null,
+  );
+  const [externalChange, setExternalChange] = useState(false);
+  const [saveCopyRequired, setSaveCopyRequired] = useState(false);
   const [systemIsDark, setSystemIsDark] = useState(false);
   const [recentFiles, setRecentFiles] = useState<RecentFile[]>([]);
   const [preferencesLoaded, setPreferencesLoaded] = useState(false);
-  const [recentOpen, setRecentOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
   const [busy, setBusy] = useState(false);
   const [saveState, setSaveState] = useState<SaveState>("ready");
   const [error, setError] = useState<string | null>(null);
   const [unsavedReason, setUnsavedReason] = useState<string | null>(null);
 
   const editorRef = useRef<MarkdownEditorHandle>(null);
-  const recentMenuRef = useRef<HTMLDivElement>(null);
-  const recentButtonRef = useRef<HTMLButtonElement>(null);
   const dialogRef = useRef<HTMLElement>(null);
   const focusBeforeDialogRef = useRef<HTMLElement | null>(null);
   const decisionResolverRef = useRef<((value: UnsavedDecision) => void) | null>(
@@ -128,6 +124,19 @@ function App() {
   );
   const closeAllowedRef = useRef(false);
   const operationRef = useRef(false);
+  // Holds New/Open/Close across awaits; their own Save remains allowed.
+  const transitionRef = useRef(false);
+  const currentDocumentRef = useRef(documentState);
+  currentDocumentRef.current = documentState;
+  const recoveryEnabledRef = useRef(true);
+  const recoveryClosingRef = useRef(false);
+  const closingRequestRef = useRef(false);
+  const acknowledgedDiskRef = useRef<string | null>(null);
+  const observedDiskRef = useRef<string | null>(null);
+  const recoveryTimerRef = useRef<number | undefined>(undefined);
+  const recoveryBlocked = !recoveryLoaded || recoveryDraft !== null;
+  const recoveryBlockedRef = useRef(recoveryBlocked);
+  recoveryBlockedRef.current = recoveryBlocked;
   const currentContentRef = useRef(documentState.content);
   currentContentRef.current = documentState.content;
 
@@ -153,6 +162,8 @@ function App() {
       .then((preferences) => {
         if (!active) return;
         setTheme(preferences.theme);
+        setFontSize(preferences.fontSize);
+        setWritingWidth(preferences.writingWidth);
         setMode(preferences.viewMode);
         setRecentFiles(preferences.recentFiles);
       })
@@ -171,6 +182,73 @@ function App() {
   }, []);
 
   useEffect(() => {
+    let active = true;
+    void loadRecovery()
+      .then((draft) => {
+        if (active) setRecoveryDraft(draft);
+      })
+      .catch((cause) => {
+        recoveryEnabledRef.current = false;
+        if (active)
+          setError(`Recovery is unavailable: ${getErrorMessage(cause)}`);
+      })
+      .finally(() => {
+        if (active) setRecoveryLoaded(true);
+      });
+    return () => {
+      active = false;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (
+      recoveryBlocked ||
+      !recoveryEnabledRef.current ||
+      recoveryClosingRef.current
+    )
+      return;
+    const draft = isDirty ? documentState : null;
+    const saveDraft = () => {
+      if (recoveryClosingRef.current) return;
+      window.clearTimeout(recoveryTimerRef.current);
+      void persistRecovery(draft).catch((cause) =>
+        setError(
+          `The recovery draft could not be saved: ${getErrorMessage(cause)}`,
+        ),
+      );
+    };
+    recoveryTimerRef.current = window.setTimeout(saveDraft, 350);
+    const onVisibility = () => {
+      if (document.visibilityState === "hidden") saveDraft();
+    };
+    window.addEventListener("blur", saveDraft);
+    document.addEventListener("visibilitychange", onVisibility);
+    return () => {
+      window.clearTimeout(recoveryTimerRef.current);
+      window.removeEventListener("blur", saveDraft);
+      document.removeEventListener("visibilitychange", onVisibility);
+    };
+  }, [documentState, isDirty, recoveryBlocked]);
+
+  async function discardRecovery() {
+    try {
+      await persistRecovery(null);
+      setRecoveryDraft(null);
+    } catch (cause) {
+      setError(
+        `Could not discard the recovery draft: ${getErrorMessage(cause)}`,
+      );
+    }
+  }
+
+  function restoreRecovery() {
+    if (!recoveryDraft) return;
+    setDocumentState((current) => ({ ...recoveryDraft, id: current.id + 1 }));
+    setRecoveryDraft(null);
+    setMode((current) => (current === "preview" ? "live" : current));
+  }
+
+  useEffect(() => {
     document.documentElement.dataset.theme = isDark ? "dark" : "light";
     document.documentElement.style.colorScheme = isDark ? "dark" : "light";
     document
@@ -180,12 +258,16 @@ function App() {
 
   useEffect(() => {
     if (!preferencesLoaded) return;
-    void persistPreferences({ theme, viewMode: mode, recentFiles }).catch(
-      (cause) => {
-        setError(`Preferences could not be saved: ${getErrorMessage(cause)}`);
-      },
-    );
-  }, [mode, preferencesLoaded, recentFiles, theme]);
+    void persistPreferences({
+      theme,
+      viewMode: mode,
+      recentFiles,
+      fontSize,
+      writingWidth,
+    }).catch((cause) => {
+      setError(`Preferences could not be saved: ${getErrorMessage(cause)}`);
+    });
+  }, [mode, preferencesLoaded, recentFiles, theme, fontSize, writingWidth]);
 
   useEffect(() => {
     const title = `${isDirty ? "• " : ""}${documentState.name} — Pero`;
@@ -195,26 +277,6 @@ function App() {
         .setTitle(title)
         .catch(() => undefined);
   }, [documentState.name, isDirty]);
-
-  useEffect(() => {
-    if (!recentOpen) return;
-    const outside = (event: PointerEvent) => {
-      if (!recentMenuRef.current?.contains(event.target as Node))
-        setRecentOpen(false);
-    };
-    const escape = (event: KeyboardEvent) => {
-      if (event.key === "Escape") {
-        setRecentOpen(false);
-        recentButtonRef.current?.focus();
-      }
-    };
-    window.addEventListener("pointerdown", outside);
-    window.addEventListener("keydown", escape);
-    return () => {
-      window.removeEventListener("pointerdown", outside);
-      window.removeEventListener("keydown", escape);
-    };
-  }, [recentOpen]);
 
   const askAboutUnsavedChanges = useCallback((reason: string) => {
     if (decisionResolverRef.current) {
@@ -242,23 +304,34 @@ function App() {
   }, []);
 
   const saveDocument = useCallback(
-    async (saveAs = false): Promise<string | null> => {
-      if (operationRef.current || decisionResolverRef.current) return null;
+    async (
+      saveAs = false,
+      duringTransition = false,
+    ): Promise<string | null> => {
+      if (
+        operationRef.current ||
+        decisionResolverRef.current ||
+        recoveryBlockedRef.current ||
+        (transitionRef.current && !duringTransition)
+      )
+        return null;
       operationRef.current = true;
       setBusy(true);
       setError(null);
       try {
-        const contentToSave = documentState.content;
-        let path = saveAs ? null : documentState.path;
+        const snapshot = currentDocumentRef.current;
+        const contentToSave = snapshot.content;
+        let path = saveAs || saveCopyRequired ? null : snapshot.path;
         if (!path) {
-          path = await chooseSavePath(documentState.name);
+          path = await chooseSavePath(snapshot.name);
           if (!path) return null;
         }
         setSaveState("saving");
         const saved = await writeMarkdownFile(
           path,
           contentToSave,
-          saveAs ? null : documentState.revision,
+          snapshot.revision,
+          snapshot.path,
         );
         setDocumentState((current) => ({
           ...current,
@@ -267,11 +340,18 @@ function App() {
           savedContent: contentToSave,
           revision: saved.revision,
         }));
+        acknowledgedDiskRef.current = null;
+        observedDiskRef.current = null;
+        setExternalChange(false);
+        setSaveCopyRequired(false);
         rememberFile(saved);
         setSaveState("saved");
         window.setTimeout(() => setSaveState("ready"), 1600);
         return contentToSave;
       } catch (cause) {
+        if (/changed on disk|deleted or moved/i.test(getErrorMessage(cause))) {
+          setExternalChange(true);
+        }
         setSaveState("error");
         setError(`Could not save the file: ${getErrorMessage(cause)}`);
         return null;
@@ -280,16 +360,17 @@ function App() {
         setBusy(false);
       }
     },
-    [documentState, rememberFile],
+    [rememberFile, saveCopyRequired],
   );
 
   const canReplaceDocument = useCallback(
     async (reason: string) => {
-      if (!isDirty) return true;
+      const current = currentDocumentRef.current;
+      if (current.content === current.savedContent) return true;
       const answer = await askAboutUnsavedChanges(reason);
       if (answer === "cancel") return false;
       if (answer === "discard") return true;
-      const savedSnapshot = await saveDocument();
+      const savedSnapshot = await saveDocument(false, true);
       if (savedSnapshot === null) return false;
       if (currentContentRef.current !== savedSnapshot) {
         setError(
@@ -299,23 +380,47 @@ function App() {
       }
       return true;
     },
-    [askAboutUnsavedChanges, isDirty, saveDocument],
+    [askAboutUnsavedChanges, saveDocument],
   );
 
   const createNewDocument = useCallback(async () => {
-    if (operationRef.current || decisionResolverRef.current) return;
-    if (!(await canReplaceDocument("creating a new note"))) return;
-    setDocumentState((current) => ({ ...EMPTY_DOCUMENT, id: current.id + 1 }));
-    setSaveState("ready");
-    setError(null);
-    setRecentOpen(false);
-    setMode((current) => (current === "preview" ? "live" : current));
-    window.requestAnimationFrame(() => editorRef.current?.focus());
+    if (
+      operationRef.current ||
+      transitionRef.current ||
+      decisionResolverRef.current ||
+      recoveryBlockedRef.current
+    )
+      return;
+    transitionRef.current = true;
+    try {
+      if (!(await canReplaceDocument("creating a new note"))) return;
+      setDocumentState((current) => ({
+        ...EMPTY_DOCUMENT,
+        id: current.id + 1,
+      }));
+      acknowledgedDiskRef.current = null;
+      observedDiskRef.current = null;
+      setExternalChange(false);
+      setSaveCopyRequired(false);
+      setSaveState("ready");
+      setError(null);
+      setMode((current) => (current === "preview" ? "live" : current));
+      window.requestAnimationFrame(() => editorRef.current?.focus());
+    } finally {
+      transitionRef.current = false;
+    }
   }, [canReplaceDocument]);
 
   const openDocument = useCallback(
     async (knownPath?: string) => {
-      if (operationRef.current || decisionResolverRef.current) return;
+      if (
+        transitionRef.current ||
+        operationRef.current ||
+        decisionResolverRef.current ||
+        recoveryBlockedRef.current
+      )
+        return;
+      transitionRef.current = true;
       setError(null);
       let path = knownPath;
       try {
@@ -331,7 +436,17 @@ function App() {
         if (operationRef.current) return;
         operationRef.current = true;
         setBusy(true);
+        const beforeRead = currentDocumentRef.current;
         const opened = await readMarkdownFile(path);
+        if (
+          currentDocumentRef.current.id !== beforeRead.id ||
+          currentDocumentRef.current.content !== beforeRead.content
+        ) {
+          setError(
+            "Opening was cancelled because you made new edits. Your text has been kept.",
+          );
+          return;
+        }
         setDocumentState((current) => ({
           id: current.id + 1,
           path: opened.path,
@@ -341,8 +456,11 @@ function App() {
           revision: opened.revision,
           lineSeparator: detectLineSeparator(opened.contents),
         }));
+        acknowledgedDiskRef.current = null;
+        observedDiskRef.current = null;
+        setExternalChange(false);
+        setSaveCopyRequired(false);
         rememberFile(opened);
-        setRecentOpen(false);
         setSaveState("ready");
         window.requestAnimationFrame(() => editorRef.current?.focus());
       } catch (cause) {
@@ -354,6 +472,7 @@ function App() {
         }
         setError(`Could not open the file: ${getErrorMessage(cause)}`);
       } finally {
+        transitionRef.current = false;
         operationRef.current = false;
         setBusy(false);
       }
@@ -362,14 +481,81 @@ function App() {
   );
 
   useEffect(() => {
+    if (!isTauri() || recoveryBlocked || !documentState.path) return;
+    let disposed = false;
+    let checking = false;
+    const check = async () => {
+      if (
+        checking ||
+        operationRef.current ||
+        transitionRef.current ||
+        decisionResolverRef.current
+      )
+        return;
+      const snapshot = currentDocumentRef.current;
+      if (!snapshot.path) return;
+      checking = true;
+      try {
+        const disk = await readMarkdownFile(snapshot.path);
+        if (
+          !disposed &&
+          !operationRef.current &&
+          currentDocumentRef.current.id === snapshot.id &&
+          currentDocumentRef.current.revision === snapshot.revision &&
+          disk.revision !== snapshot.revision
+        ) {
+          observedDiskRef.current = disk.revision;
+          if (acknowledgedDiskRef.current !== disk.revision)
+            setExternalChange(true);
+        }
+      } catch {
+        if (!disposed && currentDocumentRef.current.id === snapshot.id) {
+          observedDiskRef.current = "unavailable";
+          if (acknowledgedDiskRef.current !== "unavailable")
+            setExternalChange(true);
+        }
+      } finally {
+        checking = false;
+      }
+    };
+    void check();
+    window.addEventListener("focus", check);
+    const timer = window.setInterval(() => {
+      if (!document.hidden) void check();
+    }, 10000);
+    return () => {
+      disposed = true;
+      window.removeEventListener("focus", check);
+      window.clearInterval(timer);
+    };
+  }, [
+    documentState.id,
+    documentState.path,
+    documentState.revision,
+    recoveryBlocked,
+  ]);
+
+  useEffect(() => {
     const shortcuts: Record<string, ViewMode> = {
       "1": "source",
       "2": "live",
       "3": "split",
       "4": "preview",
     };
+    const shortcutsByCode: Record<string, ViewMode> = {
+      Digit1: "source",
+      Digit2: "live",
+      Digit3: "split",
+      Digit4: "preview",
+    };
     function handleShortcut(event: KeyboardEvent) {
-      if (decisionResolverRef.current) return;
+      if (
+        decisionResolverRef.current ||
+        settingsOpen ||
+        recoveryBlockedRef.current
+      )
+        return;
+      if (isTauri() && !shortcutsByCode[event.code]) return;
       if (!event.metaKey && !event.ctrlKey) return;
       const key = event.key.toLowerCase();
       if (key === "s") {
@@ -381,15 +567,15 @@ function App() {
       } else if (key === "n") {
         event.preventDefault();
         void createNewDocument();
-      } else if (shortcuts[key]) {
+      } else if (shortcuts[key] ?? shortcutsByCode[event.code]) {
         event.preventDefault();
-        setMode(shortcuts[key]);
+        setMode(shortcuts[key] ?? shortcutsByCode[event.code]);
       }
     }
     window.addEventListener("keydown", handleShortcut, { capture: true });
     return () =>
       window.removeEventListener("keydown", handleShortcut, { capture: true });
-  }, [createNewDocument, openDocument, saveDocument]);
+  }, [createNewDocument, openDocument, saveDocument, settingsOpen]);
 
   useEffect(() => {
     if (!unsavedReason) return;
@@ -431,42 +617,140 @@ function App() {
     window.addEventListener("beforeunload", beforeUnload);
 
     let unlisten: (() => void) | undefined;
+    let disposed = false;
     if (isTauri()) {
       const appWindow = getCurrentWindow();
       void appWindow
         .onCloseRequested(async (event) => {
-          if (closeAllowedRef.current || !dirtyRef.current) return;
+          if (closeAllowedRef.current) return;
+          // Keep an offered draft intact if the user closes before deciding.
+          if (recoveryBlockedRef.current) return;
           event.preventDefault();
+          if (
+            operationRef.current ||
+            transitionRef.current ||
+            closingRequestRef.current
+          )
+            return;
+          transitionRef.current = true;
+          closingRequestRef.current = true;
+          setSettingsOpen(false);
           if (await canCloseRef.current("closing Pero")) {
-            closeAllowedRef.current = true;
+            window.clearTimeout(recoveryTimerRef.current);
+            recoveryClosingRef.current = true;
             try {
+              const snapshot = currentDocumentRef.current;
+              if (recoveryEnabledRef.current) await persistRecovery(null);
+              if (currentDocumentRef.current.content !== snapshot.content)
+                throw new Error(
+                  "New edits were made while closing. Your text has been kept.",
+                );
+              closeAllowedRef.current = true;
               await appWindow.close();
             } catch (cause) {
               closeAllowedRef.current = false;
+              recoveryClosingRef.current = false;
+              const current = currentDocumentRef.current;
+              if (
+                recoveryEnabledRef.current &&
+                current.content !== current.savedContent
+              )
+                void persistRecovery(current).catch(() => undefined);
               setError(
                 `Pero could not close the window: ${getErrorMessage(cause)}`,
               );
             }
           }
+          transitionRef.current = false;
+          closingRequestRef.current = false;
         })
         .then((dispose) => {
-          unlisten = dispose;
+          if (disposed) dispose();
+          else unlisten = dispose;
         });
     }
     return () => {
+      disposed = true;
       window.removeEventListener("beforeunload", beforeUnload);
       unlisten?.();
     };
   }, []);
 
-  function cycleTheme() {
-    setTheme((current) =>
-      current === "system" ? "light" : current === "light" ? "dark" : "system",
+  useEffect(() => {
+    if (!preferencesLoaded) return;
+    void syncNativeMenu(recentFiles, {
+      mode,
+      blocked: busy || Boolean(unsavedReason) || recoveryBlocked,
+      canSave: isDirty || documentState.path === null,
+    }).catch((cause) =>
+      setError(`Native menus could not update: ${getErrorMessage(cause)}`),
     );
-  }
+  }, [
+    mode,
+    busy,
+    unsavedReason,
+    isDirty,
+    documentState.path,
+    recentFiles,
+    preferencesLoaded,
+    recoveryBlocked,
+  ]);
 
-  const ThemeIcon =
-    theme === "system" ? SystemIcon : theme === "dark" ? MoonIcon : SunIcon;
+  // Keep one native listener while always using the latest document state.
+  const menuActionRef = useRef<(action: string) => void>(() => {});
+  menuActionRef.current = (action) => {
+    if (
+      decisionResolverRef.current ||
+      operationRef.current ||
+      transitionRef.current ||
+      recoveryBlockedRef.current
+    )
+      return;
+    if (action === "settings") {
+      setSettingsOpen(true);
+      return;
+    }
+    // Dismiss the modal first so it cannot cover a file or unsaved-changes dialog.
+    setSettingsOpen(false);
+    if (action === "new") void createNewDocument();
+    else if (action === "open") void openDocument();
+    else if (action === "save") void saveDocument();
+    else if (action === "save-as") void saveDocument(true);
+    else if (action === "clear-recent") setRecentFiles([]);
+    else if (action.startsWith("recent:")) void openDocument(action.slice(7));
+    else if (action.startsWith("mode:")) setMode(action.slice(5) as ViewMode);
+    else if (action === "find" || action === "replace") {
+      setMode((current) => (current === "preview" ? "source" : current));
+      window.requestAnimationFrame(() =>
+        editorRef.current?.find(action === "replace"),
+      );
+    } else if (action === "close" || action === "quit")
+      void getCurrentWindow()
+        .close()
+        .catch((cause) =>
+          setError(`Pero could not close: ${getErrorMessage(cause)}`),
+        );
+  };
+  useEffect(() => {
+    if (!isTauri()) return;
+    let disposed = false;
+    let unlisten: (() => void) | undefined;
+    void listen<string>("menu-action", ({ payload }) =>
+      menuActionRef.current(payload),
+    )
+      .then((cleanup) => {
+        if (disposed) cleanup();
+        else unlisten = cleanup;
+      })
+      .catch((cause) =>
+        setError(`Native menus could not connect: ${getErrorMessage(cause)}`),
+      );
+    return () => {
+      disposed = true;
+      unlisten?.();
+    };
+  }, []);
+
   const statusText = busy
     ? saveState === "saving"
       ? "Saving…"
@@ -478,145 +762,131 @@ function App() {
         : "Up to date";
 
   return (
-    <main className="app-shell" aria-busy={busy}>
-      <header className="toolbar" inert={unsavedReason ? true : undefined}>
-        <div className="toolbar-group file-actions" aria-label="File actions">
-          <button
-            className="tool-button"
-            aria-label="New"
-            onClick={() => void createNewDocument()}
-            disabled={busy}
-            title="New note (Ctrl/⌘ N)"
-          >
-            <NewIcon />
-            <span>New</span>
-          </button>
-          <button
-            className="tool-button"
-            aria-label="Open"
-            onClick={() => void openDocument()}
-            disabled={busy}
-            title="Open note (Ctrl/⌘ O)"
-          >
-            <OpenIcon />
-            <span>Open</span>
-          </button>
-          <button
-            className="tool-button"
-            aria-label="Save"
-            onClick={() => void saveDocument()}
-            disabled={busy || (!isDirty && documentState.path !== null)}
-            title="Save note (Ctrl/⌘ S)"
-          >
-            <SaveIcon />
-            <span>Save</span>
-          </button>
-          <button
-            className="tool-button save-as-button"
-            aria-label="Save As"
-            onClick={() => void saveDocument(true)}
-            disabled={busy}
-            title="Save note as… (Ctrl/⌘ Shift S)"
-          >
-            <SaveAsIcon />
-            <span>Save As…</span>
-          </button>
-          <div className="recent-control" ref={recentMenuRef}>
-            <button
-              ref={recentButtonRef}
-              className="tool-button"
-              aria-label="Recent notes"
-              aria-expanded={recentOpen}
-              aria-controls="recent-notes"
-              onClick={() => setRecentOpen((value) => !value)}
-              title="Recent notes"
-            >
-              <RecentIcon />
-              <span>Recent</span>
-            </button>
-            {recentOpen && (
-              <div
-                className="recent-menu"
-                id="recent-notes"
-                aria-label="Recent notes"
-              >
-                <div className="recent-heading">Recent notes</div>
-                {recentFiles.length === 0 ? (
-                  <p className="recent-empty">
-                    Files you open will appear here.
-                  </p>
-                ) : (
-                  recentFiles.map((file) => (
-                    <div className="recent-item" key={file.path}>
-                      <button
-                        className="recent-file"
-                        onClick={() => void openDocument(file.path)}
-                      >
-                        <strong>{file.name}</strong>
-                        <span>{file.path}</span>
-                      </button>
-                      <button
-                        className="recent-remove"
-                        aria-label={`Remove ${file.name} from recent notes`}
-                        title="Remove from recent notes"
-                        onClick={() =>
-                          setRecentFiles((files) =>
-                            removeRecentFile(files, file.path),
-                          )
-                        }
-                      >
-                        <CloseIcon />
-                      </button>
-                    </div>
-                  ))
-                )}
-              </div>
-            )}
-          </div>
-        </div>
-
+    <main
+      className="app-shell"
+      aria-busy={busy}
+      style={
+        {
+          "--writing-font-size": `${fontSize}px`,
+          "--writing-width": `${writingWidth}px`,
+        } as CSSProperties
+      }
+    >
+      <header
+        className={`toolbar ${isTauri() && /Mac/.test(navigator.platform) ? "mac-toolbar" : ""}`}
+        data-tauri-drag-region
+        inert={unsavedReason ? true : undefined}
+      >
         <div
           className="document-title"
+          data-tauri-drag-region
           title={documentState.path ?? "Not saved yet"}
         >
           <span
             className={isDirty ? "dirty-dot visible" : "dirty-dot"}
             aria-hidden="true"
           />
-          <span>{documentState.name}</span>
+          <span className="document-label" data-tauri-drag-region>
+            <span data-tauri-drag-region>{documentState.name}</span>
+            {documentState.path && (
+              <span className="document-folder" data-tauri-drag-region>
+                {documentState.path
+                  .replace(/\\/g, "/")
+                  .split("/")
+                  .slice(0, -1)
+                  .filter(Boolean)
+                  .slice(-2)
+                  .join(" / ") || "/"}
+              </span>
+            )}
+          </span>
           <span className="sr-only">
             {isDirty ? "Unsaved changes" : "All changes saved"}
           </span>
         </div>
+        <EditorControls
+          fontSize={fontSize}
+          onFontSizeChange={setFontSize}
+          writingWidth={writingWidth}
+          onWritingWidthChange={setWritingWidth}
+          mode={mode}
+          onModeChange={setMode}
+          theme={theme}
+          onThemeChange={setTheme}
+          settingsOpen={settingsOpen}
+          onSettingsOpenChange={setSettingsOpen}
+        />
+      </header>
 
-        <div className="toolbar-group view-actions">
-          <div className="mode-switcher" role="group" aria-label="View mode">
-            {(["source", "live", "split", "preview"] as ViewMode[]).map(
-              (viewMode, index) => (
-                <button
-                  key={viewMode}
-                  className={
-                    mode === viewMode ? "mode-button active" : "mode-button"
-                  }
-                  aria-pressed={mode === viewMode}
-                  onClick={() => setMode(viewMode)}
-                  title={`${MODE_LABELS[viewMode]} view (Ctrl/⌘ ${index + 1})`}
-                >
-                  {MODE_LABELS[viewMode]}
-                </button>
-              ),
-            )}
-          </div>
+      {recoveryDraft && (
+        <div
+          className="notice-banner"
+          role="region"
+          aria-label="Recover unsaved note"
+        >
+          <span>
+            Recover unsaved changes to <strong>{recoveryDraft.name}</strong>?
+          </span>
+          <button className="button primary" onClick={restoreRecovery}>
+            Restore draft
+          </button>
           <button
-            className="icon-button"
-            onClick={cycleTheme}
-            aria-label={`${THEME_LABELS[theme]}. Change theme.`}
-            title={THEME_LABELS[theme]}
+            className="button ghost"
+            onClick={() => void discardRecovery()}
           >
-            <ThemeIcon />
+            Discard draft
           </button>
         </div>
-      </header>
+      )}
+      {externalChange && !recoveryBlocked && (
+        <div
+          className="notice-banner"
+          role="region"
+          aria-label="File changed on disk"
+          inert={unsavedReason ? true : undefined}
+        >
+          <span>
+            This file changed or became unavailable on disk. Your text is safe.
+          </span>
+          <button
+            className="button ghost"
+            disabled={busy}
+            onClick={() => void openDocument(documentState.path ?? undefined)}
+          >
+            Reload from disk
+          </button>
+          <button
+            className="button primary"
+            disabled={busy}
+            onClick={() => {
+              acknowledgedDiskRef.current = observedDiskRef.current;
+              setExternalChange(false);
+              setSaveCopyRequired(true);
+            }}
+          >
+            Keep my changes
+          </button>
+        </div>
+      )}
+      {saveCopyRequired && !externalChange && (
+        <div
+          className="notice-banner"
+          role="status"
+          inert={unsavedReason ? true : undefined}
+        >
+          <span>
+            Your changes are kept. Save to a different file to preserve both
+            versions.
+          </span>
+          <button
+            className="button primary"
+            disabled={busy}
+            onClick={() => void saveDocument(true)}
+          >
+            Save my version as…
+          </button>
+        </div>
+      )}
 
       {error && (
         <div
@@ -633,7 +903,7 @@ function App() {
 
       <div
         className={`workspace mode-${mode}`}
-        inert={unsavedReason ? true : undefined}
+        inert={unsavedReason || recoveryBlocked ? true : undefined}
       >
         <section className="editor-pane" aria-hidden={mode === "preview"}>
           <MarkdownEditor
@@ -642,9 +912,15 @@ function App() {
             value={documentState.content}
             isDark={isDark}
             livePreview={mode === "live"}
+            fontSize={fontSize}
+            writingWidth={writingWidth}
+            onLinkError={setError}
             lineSeparator={documentState.lineSeparator}
             onChange={(content) => {
-              setDocumentState((current) => ({ ...current, content }));
+              const next = { ...currentDocumentRef.current, content };
+              currentDocumentRef.current = next;
+              currentContentRef.current = content;
+              setDocumentState(next);
               setSaveState("ready");
             }}
           />

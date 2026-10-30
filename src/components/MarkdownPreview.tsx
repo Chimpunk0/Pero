@@ -1,7 +1,6 @@
 import { useMemo, type MouseEvent } from "react";
-import { openUrl } from "@tauri-apps/plugin-opener";
 import { renderMarkdown } from "../lib/markdown";
-import { isTauri } from "../lib/platform";
+import { openMarkdownLink } from "../lib/links";
 
 interface MarkdownPreviewProps {
   content: string;
@@ -23,19 +22,10 @@ export function MarkdownPreview({
     if (href.startsWith("#")) return;
 
     event.preventDefault();
-    if (!/^https?:\/\//i.test(href) && !/^mailto:/i.test(href)) {
-      onLinkError("Local note links are planned for a later version of Pero.");
-      return;
-    }
-
     try {
-      if (isTauri()) {
-        await openUrl(href);
-      } else {
-        window.open(href, "_blank", "noopener,noreferrer");
-      }
-    } catch {
-      onLinkError("Pero could not open that link.");
+      await openMarkdownLink(href);
+    } catch (cause) {
+      onLinkError((cause as Error).message);
     }
   }
 
@@ -55,10 +45,14 @@ export function MarkdownPreview({
 
   return (
     <section
-      className="preview-pane markdown-body"
+      className="preview-pane"
       aria-label="Markdown preview"
       onClick={handleClick}
-      dangerouslySetInnerHTML={{ __html: html }}
-    />
+    >
+      <div
+        className="preview-content markdown-body"
+        dangerouslySetInnerHTML={{ __html: html }}
+      />
+    </section>
   );
 }

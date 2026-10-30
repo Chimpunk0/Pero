@@ -1,6 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { open, save } from "@tauri-apps/plugin-dialog";
-import type { MarkdownDocument, Preferences } from "../types";
+import type { MarkdownDocument, Preferences, RecoveryDraft } from "../types";
 import { normalizePreferences } from "./preferences";
 
 const PREFERENCES_KEY = "pero.preferences";
@@ -62,10 +62,12 @@ export async function chooseSavePath(
 
   const selection = await save({
     title: "Save Markdown file",
-    defaultPath: currentName.endsWith(".md")
+    defaultPath: /\.(md|markdown|mdown|mkd)$/i.test(currentName)
       ? currentName
       : `${currentName}.md`,
-    filters: [{ name: "Markdown", extensions: ["md", "markdown"] }],
+    filters: [
+      { name: "Markdown", extensions: ["md", "markdown", "mdown", "mkd"] },
+    ],
   });
 
   if (!selection) return null;
@@ -86,6 +88,56 @@ export async function writeMarkdownFile(
   path: string,
   contents: string,
   expectedRevision: string | null,
+  currentDocumentPath: string | null = null,
 ): Promise<MarkdownDocument> {
-  return invoke("write_markdown_file", { path, contents, expectedRevision });
+  return invoke("write_markdown_file", {
+    path,
+    contents,
+    expectedRevision,
+    currentDocumentPath,
+  });
+}
+
+export async function syncNativeMenu(
+  recentFiles: Preferences["recentFiles"],
+  state: { mode: Preferences["viewMode"]; blocked: boolean; canSave: boolean },
+): Promise<void> {
+  if (isTauri()) await invoke("sync_native_menu", { recentFiles, state });
+}
+
+// Serialize recovery writes so an older snapshot cannot replace a newer one.
+let recoveryWriteQueue: Promise<void> = Promise.resolve();
+const RECOVERY_KEY = "pero.recovery";
+
+export async function loadRecovery(): Promise<RecoveryDraft | null> {
+  const value: unknown = isTauri()
+    ? await invoke("load_recovery")
+    : JSON.parse(localStorage.getItem(RECOVERY_KEY) ?? "null");
+  if (value === null) return null;
+  const draft = value as Partial<RecoveryDraft>;
+  if (
+    typeof draft !== "object" ||
+    typeof draft.content !== "string" ||
+    typeof draft.savedContent !== "string" ||
+    typeof draft.name !== "string" ||
+    !(draft.path === null || typeof draft.path === "string") ||
+    !(draft.revision === null || typeof draft.revision === "string") ||
+    !["\n", "\r\n", "\r"].includes(draft.lineSeparator ?? "")
+  ) {
+    throw new Error(
+      "The recovery draft is damaged. Its file has been kept for manual recovery.",
+    );
+  }
+  return draft as RecoveryDraft;
+}
+
+export function persistRecovery(draft: RecoveryDraft | null): Promise<void> {
+  recoveryWriteQueue = recoveryWriteQueue
+    .catch(() => undefined)
+    .then(async () => {
+      if (isTauri()) await invoke("save_recovery", { draft });
+      else if (draft) localStorage.setItem(RECOVERY_KEY, JSON.stringify(draft));
+      else localStorage.removeItem(RECOVERY_KEY);
+    });
+  return recoveryWriteQueue;
 }
